@@ -128,11 +128,20 @@
     .char-current { color: white; border-bottom: 2px solid white; }
     .char-pending { color: rgba(255, 255, 255, 0.45); }
 
-    /* Prompt */
+    /* Prompt — centred over the whole frame, fades out after a few seconds */
     #prompt-label {
-      color: rgba(255, 255, 255, 0.45);
-      font-size: 11px;
-      text-align: center;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.65);
+      color: white;
+      font-size: 20px;
+      padding: 14px 28px;
+      border-radius: 6px;
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
       transition: opacity 1.5s ease;
     }
   </style>
@@ -164,8 +173,9 @@
         <div id="passage-inner"></div>
       </div>
 
-      <div id="prompt-label">Type to skip this ad</div>
     </div>
+
+    <div id="prompt-label">Type to skip this ad</div>
 
   </div>
   <script>
@@ -216,7 +226,7 @@
   // Append a new POOL_A entry when this many untyped characters remain.
   var APPEND_TRIGGER_CHARS         = 80;
   // Delay (ms) before the "Type to skip" prompt fades out after the panel opens.
-  var PROMPT_FADE_DELAY_MS         = 3000;
+  var PROMPT_FADE_DELAY_MS         = 4000;
 
   // Clamp range for race icon positions so they stay within the visible bar track.
   var ICON_POSITION_MIN            = 1;
@@ -224,6 +234,16 @@
 
   // localStorage key that persists the last-used POOL_B index across page loads.
   var LOCALSTORAGE_LAST_B_KEY      = 'skipgame_lastB';
+
+  // videoProgress % thresholds at which a one-time speed boost is applied to help the user win.
+  var LATE_BOOST_THRESHOLDS        = [70, 80, 90];
+  // progressScale added at each late-game boost threshold (stacks across all three triggers).
+  var LATE_BOOST_AMOUNT            = 0.15;
+  // Maximum progressScale the late-game boosts can push to (independent of cheat mode cap).
+  var LATE_BOOST_SCALE_MAX         = 3.0;
+
+  // Number of Pool A entries pre-appended at session start so the passage isn't empty on load.
+  var INITIAL_POOL_A_COUNT         = 2;
 
   // ---- Paragraph pools ----
   //
@@ -295,7 +315,6 @@
     passage: '',            // the full text the user must type
     typedIndex: 0,          // index of the next character the user must type
     hasError: false,        // true when the last keystroke was wrong; clears on Backspace
-    wordsTyped: 0,          // total words completed (used to trigger rubber-band updates)
     progressScale: INITIAL_PROGRESS_SCALE, // multiplier applied to baseGain; starts low so early typing doesn't outrun the ad
     skipProgress: 0,        // 0–100: how far the skip bar has advanced
     videoProgress: 0,       // 0–100: how far the ad has played (currentTime / duration * 100)
@@ -303,6 +322,7 @@
     videoDuration: null,    // ad duration in seconds; set on first timeupdate with a valid duration
     baseGain: null,         // skipProgress gain per correct character (100 / initial passage length)
     usedPassages: [],       // prevents repeating entries; stores keys like 'A3' or 'B1'
+    lateBoostsApplied: 0,  // counts how many LATE_BOOST_THRESHOLDS have fired (0–3)
   };
 
   // ---- Element refs ----
@@ -398,8 +418,12 @@
 
     switch (event.data.type) {
       // Ad has started playing — initialise passage and show the skip button.
+      // Two Pool A entries are pre-appended so there is plenty of visible text from
+      // the start. The spans they add are discarded when renderPassage() clears the
+      // DOM; state.passage already contains the full text at that point.
       case 'adStarted':
         state.passage = buildPassage();
+        for (var p = 0; p < INITIAL_POOL_A_COUNT; p++) { appendNextParagraph(); }
         computeBaseGain();
         renderPassage();
         state.phase = 'idle';
@@ -436,6 +460,13 @@
             console.log('[skipgame] win threshold reached at', state.currentTime.toFixed(2) + 's (target: ' + winLogThreshold.toFixed(2) + 's)');
           }
         }
+        // One-time speed boosts at 70%, 80%, 90% of the ad to help the user win late
+        if (state.phase === 'typing' && state.lateBoostsApplied < LATE_BOOST_THRESHOLDS.length) {
+          if (state.videoProgress >= LATE_BOOST_THRESHOLDS[state.lateBoostsApplied]) {
+            state.progressScale = Math.min(LATE_BOOST_SCALE_MAX, state.progressScale + LATE_BOOST_AMOUNT);
+            state.lateBoostsApplied++;
+          }
+        }
         updateBars();
         checkWin();
         break;
@@ -447,6 +478,7 @@
     state.phase = 'typing';
     skipBtn.style.display = 'none';
     typingPanel.classList.add('visible');
+    promptLabel.style.opacity = '1';
     setTimeout(function() {
       promptLabel.style.opacity = '0';
     }, PROMPT_FADE_DELAY_MS);
@@ -464,8 +496,8 @@
   //   - Advance typedIndex and award progress gain
   //   - Apply a hard ceiling so the skip bar never visually passes the ad bar before
   //     the win threshold (only active outside cheat mode)
-  //   - On a word boundary, run the rubber-band controller (onWordCompleted)
-  //   - Trigger a POOL_A append if fewer than 80 untyped characters remain
+  //   - Run the per-character rubber-band scale controller (adjustProgressScale)
+  //   - Trigger a POOL_A append if fewer than APPEND_TRIGGER_CHARS untyped characters remain
   //
   // On an incorrect character:
   //   - Set hasError; further typing is blocked until Backspace is pressed
@@ -502,13 +534,13 @@
       if (!state.cheatMode && state.currentTime < getWinThreshold() && state.skipProgress >= state.videoProgress) {
         state.skipProgress = Math.max(0, state.videoProgress - CEILING_GAP);
       }
+      // Per-character rubber-band scale adjustment
+      if (!state.cheatMode) {
+        adjustProgressScale();
+      }
+
       updateBars();
       checkWin();
-
-      // On word boundary, run rubber-band scale adjustment
-      if (expected === ' ') {
-        onWordCompleted();
-      }
 
       // Append more text when running low (keeps passage feeling infinite)
       if (state.passage.length - state.typedIndex < APPEND_TRIGGER_CHARS) {
@@ -521,72 +553,64 @@
     updatePassageDisplay();
   }
 
-  // Rubber-band difficulty controller — called once per completed word.
+  // Rubber-band difficulty controller — called on every correct character.
   //
   // Adjusts progressScale so that the skip bar hovers close to — but just
-  // behind — the ad bar. The target position is 80% of videoProgress.
+  // behind — the ad bar. The target position is RUBBER_BAND_TARGET_FRACTION of videoProgress.
+  // Firing per character (rather than per word) produces smooth, continuous drift
+  // instead of discrete jumps at word boundaries.
+  //
+  // Deltas are ~1/5 of the equivalent per-word values, giving the same net effect
+  // over a typical word without large step changes.
   //
   // Three timing phases:
-  //   Before slowStopThreshold (22.5% of duration):
-  //     Full control — both slowdown and boost tiers are active. A strong early
-  //     typist is braked hard; a slow typist is gently boosted toward the target.
-  //   Between slowStopThreshold and winThreshold (22.5–30% of duration):
-  //     Slowdown removed — only boost tiers remain so a lagging typist can catch up.
-  //   After winThreshold (≥ 30% of duration):
-  //     Win is possible. A gentle boost applies if the skip bar is far behind.
+  //   Before slowStopThreshold: full control — both slowdown and boost tiers active.
+  //   Between slowStopThreshold and winThreshold: boost only.
+  //   After winThreshold: win is possible; gentle boost if still behind.
   //
-  // `headroom`  = videoProgress - skipProgress  (distance from the ad bar ceiling)
-  // `gapToTarget` = targetSkip - skipProgress   (distance from the 80% target)
-  //
-  // Gain is applied per character in onKeyDown; this function only adjusts the
-  // multiplier that will affect future keystrokes.
-  function onWordCompleted() {
-    state.wordsTyped++;
-
-    if (state.cheatMode) return;
-
-    // Rubber-band scale adjustment — fires per word to avoid over-correcting
-    var targetSkip    = state.videoProgress * RUBBER_BAND_TARGET_FRACTION;
-    var gapToTarget   = targetSkip - state.skipProgress;
-    var headroom      = state.videoProgress - state.skipProgress;
+  // `headroom`    = videoProgress - skipProgress  (distance from the ad bar ceiling)
+  // `gapToTarget` = targetSkip - skipProgress     (distance from the target fraction)
+  function adjustProgressScale() {
+    var targetSkip  = state.videoProgress * RUBBER_BAND_TARGET_FRACTION;
+    var gapToTarget = targetSkip - state.skipProgress;
+    var headroom    = state.videoProgress - state.skipProgress;
 
     if (state.currentTime < getSlowStopThreshold()) {
       if (headroom <= 0) {
-        // Past ceiling — slam brakes
-        state.progressScale = Math.max(0.03, state.progressScale - 0.25);
+        // Past ceiling — brake hard
+        state.progressScale = Math.max(0.03, state.progressScale - 0.05);
       } else if (headroom < 3) {
         // Very close to ceiling — aggressive slowdown
-        state.progressScale = Math.max(0.05, state.progressScale - 0.18);
+        state.progressScale = Math.max(0.05, state.progressScale - 0.04);
       } else if (headroom < 8) {
         // Getting close to ceiling — moderate slowdown
-        state.progressScale = Math.max(0.08, state.progressScale - 0.10);
-      } else if (headroom > 20) {
-        // Far below ceiling — aggressive boost to catch up
-        state.progressScale = Math.min(1.6, state.progressScale + 0.10);
-      } else if (headroom > 12) {
+        state.progressScale = Math.max(0.08, state.progressScale - 0.02);
+      } else if (headroom > 15) {
+        // Far below ceiling — boost to catch up
+        state.progressScale = Math.min(1.6, state.progressScale + 0.07);
+      } else if (headroom > 8) {
         // Moderately behind — solid boost
-        state.progressScale = Math.min(1.4, state.progressScale + 0.05);
+        state.progressScale = Math.min(1.4, state.progressScale + 0.03);
       } else if (gapToTarget > 10) {
-        // Below 80% target — gentle boost
-        state.progressScale = Math.min(1.2, state.progressScale + 0.03);
+        // Below target fraction — gentle boost
+        state.progressScale = Math.min(1.2, state.progressScale + 0.01);
       } else if (gapToTarget < -5) {
-        // Above 80% target but not near ceiling — small nudge down
-        state.progressScale = Math.max(0.3, state.progressScale - 0.02);
+        // Above target fraction but not near ceiling — small nudge down
+        state.progressScale = Math.max(0.3, state.progressScale - 0.01);
       }
     } else if (state.currentTime < getWinThreshold()) {
-      // Slowdown phase over — only boost if falling far behind
-      if (headroom > 20) {
-        state.progressScale = Math.min(1.6, state.progressScale + 0.10);
-      } else if (headroom > 12) {
-        state.progressScale = Math.min(1.4, state.progressScale + 0.05);
+      // Slowdown phase over — only boost if falling behind
+      if (headroom > 15) {
+        state.progressScale = Math.min(1.6, state.progressScale + 0.05);
+      } else if (headroom > 8) {
+        state.progressScale = Math.min(1.4, state.progressScale + 0.02);
       }
     } else {
       // Win threshold passed — gentle boost if still behind
       if (state.skipProgress < state.videoProgress && gapToTarget > 20) {
-        state.progressScale = Math.min(1.5, state.progressScale + 0.04);
+        state.progressScale = Math.min(1.5, state.progressScale + 0.02);
       }
     }
-    // Gain is applied per character in onKeyDown, not here
   }
 
   // Build the initial per-character DOM for the passage.
