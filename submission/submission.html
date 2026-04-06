@@ -2,12 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Joel</title>
+  <title>Skip Ad</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
-  <style type="text/css">
-    html,
-    body {
+  <style>
+    html, body {
       background: transparent;
       margin: 0;
       padding: 0;
@@ -17,68 +15,652 @@
     #overlay-container {
       width: 960px;
       height: 540px;
+      position: relative;
     }
 
-    /* Your style here... (feel free to remove this example styling) */
-    #skip {
-      display: none; /* Hidden until ad starts */
+    /* Phase 1 — skip button */
+    #skip-btn {
+      display: none;
       position: absolute;
       bottom: 60px;
       right: 0;
       padding: 10px 18px;
       background: rgba(0, 0, 0, 0.6);
-      border: 1px solid black;
+      border: 1px solid rgba(255, 255, 255, 0.2);
       border-right-width: 0;
-      font-size: 1.2rem;
+      font-size: 1rem;
       border-radius: 4px 0 0 4px;
       color: white;
       cursor: pointer;
+      font-family: sans-serif;
+    }
+
+    #skip-btn:hover {
+      background: rgba(0, 0, 0, 0.8);
+    }
+
+    /* Phase 2 — typing panel */
+    #typing-panel {
+      display: none;
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 100px;
+      background: rgba(0, 0, 0, 0.78);
+      padding: 6px 12px 1px;
+      box-sizing: border-box;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    #typing-panel.visible {
+      display: flex;
+    }
+
+    /* Progress bars */
+    #bars-container {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .bar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .bar-label {
+      color: rgba(255, 255, 255, 0.55);
+      font-size: 11px;
+      width: 28px;
+      flex-shrink: 0;
+    }
+
+    .bar-track {
+      flex: 1;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 4px;
+      position: relative;
+      overflow: visible;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      width: 0%;
+    }
+
+    #ad-bar  { background: rgba(255, 255, 255, 0.55); }
+    #skip-bar { background: #4caf50; }
+
+    .race-icon {
+      position: absolute;
+      top: -18px;
+      font-size: 15px;
+      transform: translateX(-50%);
+      pointer-events: none;
+      left: 0%;
+    }
+
+    /* Passage text */
+    #passage-container {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    #passage-inner {
+      white-space: nowrap;
+      font-family: monospace;
+      font-size: 14px;
+      line-height: 1.4;
+      position: absolute;
+      left: 0;
+    }
+
+    .char-correct { color: #4caf50; }
+    .char-error   { color: #f44336; background: rgba(244, 67, 54, 0.25); border-radius: 2px; }
+    .char-current { color: white; border-bottom: 2px solid white; }
+    .char-pending { color: rgba(255, 255, 255, 0.45); }
+
+    /* Prompt */
+    #prompt-label {
+      color: rgba(255, 255, 255, 0.45);
+      font-size: 11px;
+      text-align: center;
+      transition: opacity 1.5s ease;
     }
   </style>
 </head>
-
 <body>
   <div id="overlay-container">
-    <!-- We've added a sample button. Feel free to remove it: -->
-    <button id="skip">
-      Skip Ad...
-    </button>
+
+    <button id="skip-btn">Skip Ad ›</button>
+
+    <div id="typing-panel">
+      <div id="bars-container">
+        <div class="bar-row">
+          <span class="bar-label">Ad</span>
+          <div class="bar-track">
+            <div id="ad-bar" class="bar-fill"></div>
+            <span id="flag-icon" class="race-icon">🏁</span>
+          </div>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">Skip</span>
+          <div class="bar-track">
+            <div id="skip-bar" class="bar-fill"></div>
+            <span id="car-icon" class="race-icon">🚗</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="passage-container">
+        <div id="passage-inner"></div>
+      </div>
+
+      <div id="prompt-label">Type to skip this ad</div>
+    </div>
+
   </div>
+  <script>
+/*
+ * TypeRacer Skip Ad
+ *
+ * When the user clicks "Skip Ad", the normal skip button is replaced by a
+ * typing-challenge panel at the bottom of the screen. The user must type a
+ * passage to advance a "Skip" progress bar that races against the ad's
+ * progress bar. A rubber-band difficulty controller keeps the skip bar
+ * tantalisingly close to — but slightly behind — the ad bar until a win
+ * threshold is reached (30% of the ad's duration). After that, a fast enough
+ * typist can overtake the ad bar and trigger a successful skip.
+ *
+ * Phases:
+ *   'waiting' → adStarted received
+ *   'idle'    → skip button visible, waiting for click
+ *   'typing'  → panel visible, keystroke listener active
+ *   'done'    → success or fail posted to parent
+ *
+ * Hidden cheat: press F8 during typing to bypass the rubber-band and time
+ * requirement, letting the skip bar fly past the ad bar immediately.
+ */
+(function(window, document) {
 
-  <script type="text/javascript">
-    (function(window, document){
-      // This is how you tell the parent window that the ad was successfully skipped.
-      function adSuccess() {
-        window.top.postMessage({ type: 'success' }, '*');
-      }
+  // ---- Config ----
+  // Tunable values in one place for easy adjustment.
 
-      const skipButton = document.getElementById('skip');
+  // Fraction of the ad's duration that must pass before winning is possible.
+  var WIN_THRESHOLD_FRACTION       = 0.30;
+  // Hard cap on the win threshold — even on a very long ad, winning unlocks by this time.
+  var WIN_THRESHOLD_MAX_SECS       = 30;
+  // Slow-stop threshold as a fraction of the win threshold (slowdown stops here, boosts only after).
+  var SLOW_STOP_TO_WIN_RATIO       = 0.75;
+  // Assumed ad duration (seconds) used before the real duration arrives from the shell.
+  var FALLBACK_VIDEO_DURATION      = 60;
 
-      // Listen for messages from the game shell
-      window.addEventListener('message', (event) => {
-        if (!event.data || !event.data.type) return;
+  // Initial progressScale; starts below 1.0 so early typing doesn't outrun the ad.
+  var INITIAL_PROGRESS_SCALE       = 0.6;
+  // progressScale applied when cheat mode (F8) is activated.
+  var CHEAT_PROGRESS_SCALE         = 2.0;
 
-        if (event.data.type === 'adStarted') {
-          // Show the skip button when the ad starts
-          skipButton.style.display = 'block';
-        }
+  // Rubber-band target: keep skip bar at this fraction of the ad bar.
+  var RUBBER_BAND_TARGET_FRACTION  = 0.7;
+  // Hard ceiling gap: clamp skip bar this many points below the ad bar before win threshold.
+  var CEILING_GAP                  = 0.1;
 
-        // By default, if the user doesn't "skip" the ad before the video ends,
-        // we call fail to restart. You're welcome to replace this with a survey
-        // or other interaction instead (see examples/survey).
-        if (event.data.type === 'adFinished') {
-          skipButton.style.display = 'none';
+  // Append a new POOL_A entry when this many untyped characters remain.
+  var APPEND_TRIGGER_CHARS         = 80;
+  // Delay (ms) before the "Type to skip" prompt fades out after the panel opens.
+  var PROMPT_FADE_DELAY_MS         = 3000;
+
+  // Clamp range for race icon positions so they stay within the visible bar track.
+  var ICON_POSITION_MIN            = 1;
+  var ICON_POSITION_MAX            = 99;
+
+  // localStorage key that persists the last-used POOL_B index across page loads.
+  var LOCALSTORAGE_LAST_B_KEY      = 'skipgame_lastB';
+
+  // ---- Paragraph pools ----
+  //
+  // POOL_A — filler text drawn from as many times as needed (pangrams,
+  // alliterations, Kitboga-themed nonsense). Appended automatically to keep
+  // the passage feeling infinite. Each entry ends with a period.
+  //
+  // POOL_B — short ironic first-person sentences. Exactly one is chosen at
+  // the start of each session and used as the opening of the passage.
+  var POOL_A = [
+    "The quick brown fox jumps over the lazy dog.",
+    "Bright vixens jump; dozy fowl quack.",
+    "How vexingly quick daft zebras jump.",
+    "Sphinx of black quartz, judge my vow.",
+    "The five boxing wizards jump quickly.",
+    "Jackdaws love my big sphinx of quartz.",
+    "A wizard's job is to vex chumps quickly in fog.",
+    "Blowzy red vixens fight for a quick jump.",
+    "The jay, pig, fox, zebra and my wolves quack.",
+    "Jinxed wizards pluck ivy from the big quilt.",
+    "Two driven jocks help fax my big quiz.",
+    "Grumpy wizards make toxic brew for the evil queen and jack.",
+    "And hast thou slain the Jabberwock?",
+    "Twas brillig, and the slithy toves did gyre and gimble in the wabe.",
+    "Purple pig.",
+    "Happy horse.",
+    "Scandalous scoundrel.",
+    "Scrappy sailor.",
+    "Misty mountain.",
+    "Jumping jellyfish.",
+    "Peculiar penguin.",
+    "Baffling buffalo.",
+    "Wandering walrus.",
+    "Dazzling dolphin.",
+    "Grumpy gorilla.",
+    "The money is stored in the donkey barn and I will not redeem it under any circumstances.",
+    "Edna always said that crows lift weights to get buff, and she was right about everything.",
+    "Milton keeps a jar of cold ketchup on his desk at all times.",
+    "Please kiss your dog on the nose and give Miller a good scratch behind the ears.",
+    "Hot dog water is the beverage of choice for mother toad.",
+    "It is not a cult. It is simply a group of people who believe in bean work.",
+    "I put mayonnaise on my Pecan Sandies every morning and I regret nothing.",
+  ];
+
+  var POOL_B = [
+    "I hereby confirm that I have watched this advertisement in its entirety.",
+    "I understand that advertising makes free content possible and I am grateful.",
+    "By typing these words, I agree to all applicable terms and conditions.",
+    "I acknowledge the right of this platform to show me additional advertisements at any time.",
+    "I am a real human person who enjoys watching advertisements.",
+    "I do not skip ads. I find them enriching. This is a true statement.",
+    "I have never once clicked away from an ad before it finished.",
+    "I confirm that I am not attempting to circumvent this advertisement.",
+    "I promise to think fondly of this brand during my next shopping experience.",
+    "I am typing this of my own free will and under no duress whatsoever.",
+  ];
+
+  // Return a random element from an array.
+  function pick(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+
+  // ---- State ----
+  var state = {
+    phase: 'waiting',       // current game phase (see top-of-file comment)
+    cheatMode: false,       // true after F8 is pressed; disables all restrictions
+    loggedSlowStop: false,  // guards the one-time console log for slow-stop threshold
+    loggedWin: false,       // guards the one-time console log for win threshold
+    passage: '',            // the full text the user must type
+    typedIndex: 0,          // index of the next character the user must type
+    hasError: false,        // true when the last keystroke was wrong; clears on Backspace
+    wordsTyped: 0,          // total words completed (used to trigger rubber-band updates)
+    progressScale: INITIAL_PROGRESS_SCALE, // multiplier applied to baseGain; starts low so early typing doesn't outrun the ad
+    skipProgress: 0,        // 0–100: how far the skip bar has advanced
+    videoProgress: 0,       // 0–100: how far the ad has played (currentTime / duration * 100)
+    currentTime: 0,         // ad playback time in seconds, updated by timeupdate events
+    videoDuration: null,    // ad duration in seconds; set on first timeupdate with a valid duration
+    baseGain: null,         // skipProgress gain per correct character (100 / initial passage length)
+    usedPassages: [],       // prevents repeating entries; stores keys like 'A3' or 'B1'
+  };
+
+  // ---- Element refs ----
+  var skipBtn       = document.getElementById('skip-btn');
+  var typingPanel   = document.getElementById('typing-panel');
+  var adBar         = document.getElementById('ad-bar');
+  var skipBarEl     = document.getElementById('skip-bar');
+  var flagIcon      = document.getElementById('flag-icon');
+  var carIcon       = document.getElementById('car-icon');
+  var passageInner  = document.getElementById('passage-inner');
+  var promptLabel   = document.getElementById('prompt-label');
+
+  // ---- Helpers ----
+
+  // Return a random index in [0, poolLen) that is not equal to `avoid`.
+  // Used to prevent the same POOL_B sentence from appearing in back-to-back sessions.
+  function pickAvoid(poolLen, avoid) {
+    var available = [];
+    for (var i = 0; i < poolLen; i++) { if (i !== avoid) available.push(i); }
+    return available[Math.floor(Math.random() * available.length)];
+  }
+
+  // Build the opening passage for a session.
+  // Picks one POOL_B sentence, avoiding the one shown in the previous session
+  // (persisted in localStorage) so the user doesn't see the same opener twice in a row.
+  function buildPassage() {
+    var lastUsedPoolBIndex = parseInt(localStorage.getItem(LOCALSTORAGE_LAST_B_KEY) || '-1', 10);
+    var nextPoolBIndex = pickAvoid(POOL_B.length, lastUsedPoolBIndex);
+    localStorage.setItem(LOCALSTORAGE_LAST_B_KEY, nextPoolBIndex);
+    state.usedPassages = ['B' + nextPoolBIndex];
+    return POOL_B[nextPoolBIndex];
+  }
+
+  // The earliest time (in seconds) at which the user can win by overtaking the ad bar.
+  // Set to 30% of the ad duration so a very fast typist still has to sit through
+  // a meaningful portion of the advertisement.
+  function getWinThreshold() {
+    var fraction = (state.videoDuration || FALLBACK_VIDEO_DURATION) * WIN_THRESHOLD_FRACTION;
+    return Math.min(fraction, WIN_THRESHOLD_MAX_SECS);
+  }
+
+  // The time (in seconds) at which the rubber-band slowdown logic stops applying.
+  // Before this point the controller actively brakes the skip bar; after this point
+  // it only boosts (helping a slow typist catch up, never dragging a fast one back).
+  // Defined as a fixed ratio of the win threshold so both always stay in sync.
+  function getSlowStopThreshold() {
+    return getWinThreshold() * SLOW_STOP_TO_WIN_RATIO;
+  }
+
+  // Compute per-character skipProgress gain, locked to the initial passage length.
+  // Locking to the initial length means appending POOL_A text later doesn't reduce
+  // the gain per keystroke — the bar still moves at the same rate regardless of how
+  // much text has been added.
+  function computeBaseGain() {
+    state.baseGain = 100 / state.passage.length;
+  }
+
+  // Append one random POOL_A entry to the live passage so the user never runs out
+  // of text. Already-used entries are skipped; when all have been used, the used
+  // list resets so entries can appear again. New characters are appended directly as
+  // DOM spans (preserving the colour state of already-typed characters) rather than
+  // re-rendering the whole passage from scratch.
+  function appendNextParagraph() {
+    var available = [];
+    for (var i = 0; i < POOL_A.length; i++) {
+      if (state.usedPassages.indexOf('A' + i) === -1) available.push(i);
+    }
+    // If all POOL_A used, reset so they can repeat
+    if (available.length === 0) {
+      state.usedPassages = state.usedPassages.filter(function(p) { return p[0] !== 'A'; });
+      for (var j = 0; j < POOL_A.length; j++) available.push(j);
+    }
+
+    var idx = available[Math.floor(Math.random() * available.length)];
+    state.usedPassages.push('A' + idx);
+
+    var newText = ' ' + POOL_A[idx];
+    state.passage += newText;
+
+    for (var k = 0; k < newText.length; k++) {
+      var span = document.createElement('span');
+      span.textContent = newText[k];
+      span.className = 'char-pending';
+      passageInner.appendChild(span);
+    }
+  }
+
+  // ---- Shell message listener ----
+  // Receives postMessage events from the game shell (index.html).
+  // All game state that depends on the video lives here.
+  window.addEventListener('message', function(event) {
+    if (!event.data || !event.data.type) return;
+
+    switch (event.data.type) {
+      // Ad has started playing — initialise passage and show the skip button.
+      case 'adStarted':
+        state.passage = buildPassage();
+        computeBaseGain();
+        renderPassage();
+        state.phase = 'idle';
+        skipBtn.style.display = 'block';
+        break;
+
+      // Ad ended without the user winning — report failure to the shell.
+      case 'adFinished':
+        if (state.phase !== 'done') {
+          state.phase = 'done';
           window.top.postMessage({ type: 'fail' }, '*');
         }
-      });
+        break;
 
-      // Your ad overlay code goes here, we've added a simple example below:
-      skipButton.addEventListener('click', () => {
-        skipButton.style.display = 'none';
-        adSuccess();
-      });
+      // Fired frequently while the ad plays; drives videoProgress and threshold logging.
+      case 'timeupdate':
+        var duration = event.data.duration;
+        state.currentTime = event.data.currentTime;
+        if (duration && !state.videoDuration) {
+          state.videoDuration = duration;
+        }
+        if (duration && duration > 0) {
+          state.videoProgress = (state.currentTime / duration) * 100;
+        }
+        if (duration) {
+          var slowStopLogThreshold = getSlowStopThreshold();
+          var winLogThreshold      = getWinThreshold();
+          if (!state.loggedSlowStop && state.currentTime >= slowStopLogThreshold) {
+            state.loggedSlowStop = true;
+            console.log('[skipgame] slow-stop threshold reached at', state.currentTime.toFixed(2) + 's (target: ' + slowStopLogThreshold.toFixed(2) + 's)');
+          }
+          if (!state.loggedWin && state.currentTime >= winLogThreshold) {
+            state.loggedWin = true;
+            console.log('[skipgame] win threshold reached at', state.currentTime.toFixed(2) + 's (target: ' + winLogThreshold.toFixed(2) + 's)');
+          }
+        }
+        updateBars();
+        checkWin();
+        break;
+    }
+  });
 
-    })(window, document);
+  skipBtn.addEventListener('click', function() {
+    if (state.phase !== 'idle') return;
+    state.phase = 'typing';
+    skipBtn.style.display = 'none';
+    typingPanel.classList.add('visible');
+    setTimeout(function() {
+      promptLabel.style.opacity = '0';
+    }, PROMPT_FADE_DELAY_MS);
+    document.addEventListener('keydown', onKeyDown);
+  });
+
+  // Handle a keypress while the typing phase is active.
+  //
+  // Key routing:
+  //   F8        → enable cheat mode (bypasses rubber-band and win threshold)
+  //   Backspace → clear the current error (cursor does not retreat)
+  //   Any other single character → attempt to match against the expected character
+  //
+  // On a correct character:
+  //   - Advance typedIndex and award progress gain
+  //   - Apply a hard ceiling so the skip bar never visually passes the ad bar before
+  //     the win threshold (only active outside cheat mode)
+  //   - On a word boundary, run the rubber-band controller (onWordCompleted)
+  //   - Trigger a POOL_A append if fewer than 80 untyped characters remain
+  //
+  // On an incorrect character:
+  //   - Set hasError; further typing is blocked until Backspace is pressed
+  function onKeyDown(e) {
+    if (state.phase !== 'typing') return;
+
+    if (e.key === 'F8') {
+      state.cheatMode = true;
+      state.progressScale = CHEAT_PROGRESS_SCALE;
+      return;
+    }
+
+    if (e.key === 'Backspace') {
+      if (state.hasError) {
+        state.hasError = false;
+        updatePassageDisplay();
+      }
+      return;
+    }
+
+    if (e.key.length !== 1) return;
+    if (state.hasError) return;
+
+    var expected = state.passage[state.typedIndex];
+
+    if (e.key === expected) {
+      state.typedIndex++;
+      state.hasError = false;
+
+      // Per-character progress gain
+      var gain = state.baseGain * state.progressScale;
+      state.skipProgress = Math.min(100, state.skipProgress + gain);
+      // Hard ceiling: car must never visually pass the flag before win threshold
+      if (!state.cheatMode && state.currentTime < getWinThreshold() && state.skipProgress >= state.videoProgress) {
+        state.skipProgress = Math.max(0, state.videoProgress - CEILING_GAP);
+      }
+      updateBars();
+      checkWin();
+
+      // On word boundary, run rubber-band scale adjustment
+      if (expected === ' ') {
+        onWordCompleted();
+      }
+
+      // Append more text when running low (keeps passage feeling infinite)
+      if (state.passage.length - state.typedIndex < APPEND_TRIGGER_CHARS) {
+        appendNextParagraph();
+      }
+    } else {
+      state.hasError = true;
+    }
+
+    updatePassageDisplay();
+  }
+
+  // Rubber-band difficulty controller — called once per completed word.
+  //
+  // Adjusts progressScale so that the skip bar hovers close to — but just
+  // behind — the ad bar. The target position is 80% of videoProgress.
+  //
+  // Three timing phases:
+  //   Before slowStopThreshold (22.5% of duration):
+  //     Full control — both slowdown and boost tiers are active. A strong early
+  //     typist is braked hard; a slow typist is gently boosted toward the target.
+  //   Between slowStopThreshold and winThreshold (22.5–30% of duration):
+  //     Slowdown removed — only boost tiers remain so a lagging typist can catch up.
+  //   After winThreshold (≥ 30% of duration):
+  //     Win is possible. A gentle boost applies if the skip bar is far behind.
+  //
+  // `headroom`  = videoProgress - skipProgress  (distance from the ad bar ceiling)
+  // `gapToTarget` = targetSkip - skipProgress   (distance from the 80% target)
+  //
+  // Gain is applied per character in onKeyDown; this function only adjusts the
+  // multiplier that will affect future keystrokes.
+  function onWordCompleted() {
+    state.wordsTyped++;
+
+    if (state.cheatMode) return;
+
+    // Rubber-band scale adjustment — fires per word to avoid over-correcting
+    var targetSkip    = state.videoProgress * RUBBER_BAND_TARGET_FRACTION;
+    var gapToTarget   = targetSkip - state.skipProgress;
+    var headroom      = state.videoProgress - state.skipProgress;
+
+    if (state.currentTime < getSlowStopThreshold()) {
+      if (headroom <= 0) {
+        // Past ceiling — slam brakes
+        state.progressScale = Math.max(0.03, state.progressScale - 0.25);
+      } else if (headroom < 3) {
+        // Very close to ceiling — aggressive slowdown
+        state.progressScale = Math.max(0.05, state.progressScale - 0.18);
+      } else if (headroom < 8) {
+        // Getting close to ceiling — moderate slowdown
+        state.progressScale = Math.max(0.08, state.progressScale - 0.10);
+      } else if (headroom > 20) {
+        // Far below ceiling — aggressive boost to catch up
+        state.progressScale = Math.min(1.6, state.progressScale + 0.10);
+      } else if (headroom > 12) {
+        // Moderately behind — solid boost
+        state.progressScale = Math.min(1.4, state.progressScale + 0.05);
+      } else if (gapToTarget > 10) {
+        // Below 80% target — gentle boost
+        state.progressScale = Math.min(1.2, state.progressScale + 0.03);
+      } else if (gapToTarget < -5) {
+        // Above 80% target but not near ceiling — small nudge down
+        state.progressScale = Math.max(0.3, state.progressScale - 0.02);
+      }
+    } else if (state.currentTime < getWinThreshold()) {
+      // Slowdown phase over — only boost if falling far behind
+      if (headroom > 20) {
+        state.progressScale = Math.min(1.6, state.progressScale + 0.10);
+      } else if (headroom > 12) {
+        state.progressScale = Math.min(1.4, state.progressScale + 0.05);
+      }
+    } else {
+      // Win threshold passed — gentle boost if still behind
+      if (state.skipProgress < state.videoProgress && gapToTarget > 20) {
+        state.progressScale = Math.min(1.5, state.progressScale + 0.04);
+      }
+    }
+    // Gain is applied per character in onKeyDown, not here
+  }
+
+  // Build the initial per-character DOM for the passage.
+  // Called once when the ad starts (before the typing panel is visible).
+  // Each character becomes its own <span> so we can colour them individually.
+  // appendNextParagraph() adds further spans later without calling this again.
+  function renderPassage() {
+    passageInner.innerHTML = '';
+    for (var i = 0; i < state.passage.length; i++) {
+      var span = document.createElement('span');
+      span.textContent = state.passage[i];
+      passageInner.appendChild(span);
+    }
+    updatePassageDisplay();
+  }
+
+  // Recolour every character span to reflect the current typedIndex and error state.
+  //   char-correct → typed correctly (green)
+  //   char-current → the next character to type; red background if hasError
+  //   char-pending → not yet reached (dim)
+  // Called after every keystroke and after appending new text.
+  function updatePassageDisplay() {
+    var spans = passageInner.children;
+    for (var i = 0; i < spans.length; i++) {
+      var charSpan = spans[i];
+      if (i < state.typedIndex) {
+        charSpan.className = 'char-correct';
+      } else if (i === state.typedIndex) {
+        charSpan.className = state.hasError ? 'char-error' : 'char-current';
+      } else {
+        charSpan.className = 'char-pending';
+      }
+    }
+    scrollToCurrentChar();
+  }
+
+  // Keep the current character centred in the visible passage container by
+  // translating the inner div left. The container clips with overflow:hidden,
+  // so only the window around the cursor is visible at any time.
+  function scrollToCurrentChar() {
+    var container = document.getElementById('passage-container');
+    var currentSpan = passageInner.children[state.typedIndex];
+    if (!currentSpan) return;
+    var containerWidth = container.offsetWidth;
+    var charLeft = currentSpan.offsetLeft;
+    var shift = Math.max(0, charLeft - containerWidth / 2);
+    passageInner.style.transform = 'translateX(-' + shift + 'px)';
+  }
+
+  // Update both progress bar fills and race icon positions.
+  // Bar widths use the raw 0–100 values; icon positions are clamped to 1–99%
+  // so the emoji never clips outside the visible track area.
+  function updateBars() {
+    var adIconLeft   = Math.min(ICON_POSITION_MAX, Math.max(ICON_POSITION_MIN, state.videoProgress));
+    var skipIconLeft = Math.min(ICON_POSITION_MAX, Math.max(ICON_POSITION_MIN, state.skipProgress));
+    adBar.style.width     = state.videoProgress + '%';
+    skipBarEl.style.width = state.skipProgress  + '%';
+    flagIcon.style.left   = adIconLeft   + '%';
+    carIcon.style.left    = skipIconLeft + '%';
+  }
+
+  // Check whether the win condition has been met and, if so, report success.
+  // Win requires the skip bar to have overtaken the ad bar AND either:
+  //   - cheat mode is active (F8 was pressed), OR
+  //   - enough of the ad has played (currentTime >= winThreshold)
+  function checkWin() {
+    if (state.phase !== 'typing') return;
+    if (state.skipProgress > state.videoProgress && (state.cheatMode || state.currentTime >= getWinThreshold())) {
+      state.phase = 'done';
+      window.top.postMessage({ type: 'success' }, '*');
+    }
+  }
+
+})(window, document);
   </script>
 </body>
 </html>
