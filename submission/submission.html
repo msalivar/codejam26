@@ -243,18 +243,17 @@
   // Maximum progressScale the late-game boosts can push to (independent of cheat mode cap).
   var LATE_BOOST_SCALE_MAX         = 3.0;
 
-  // Number of Pool A entries pre-appended at session start so the passage isn't empty on load.
-  var INITIAL_POOL_A_COUNT         = 2;
+  // Minimum passage length (chars) enforced at session start before showing the skip button.
+  // Pool A entries are appended until this is met, so the user never sees text being added
+  // the moment they begin typing.
+  var MIN_INITIAL_PASSAGE_LENGTH   = 200;
 
   // ---- Paragraph pools ----
   //
   // POOL_A — filler text drawn from as many times as needed (pangrams,
   // alliterations, Kitboga-themed nonsense). Appended automatically to keep
   // the passage feeling infinite. Each entry ends with a period.
-  //
-  // POOL_B — short ironic first-person sentences. Exactly one is chosen at
-  // the start of each session and used as the opening of the passage.
-  var POOL_A = [
+    var POOL_A = [
     "The quick brown fox jumps over the lazy dog.",
     "Bright vixens jump; dozy fowl quack.",
     "How vexingly quick daft zebras jump.",
@@ -287,6 +286,8 @@
     "I put mayonnaise on my pecan sandies every morning and I regret nothing.",
   ];
 
+  // POOL_B — short ironic first-person sentences. Exactly one is chosen at
+  // the start of each session and used as the opening of the passage.
   var POOL_B = [
     "I do not consent to this advertisement.",
     "Advertising makes free content possible and I am grateful.",
@@ -479,7 +480,7 @@
       // DOM; state.passage already contains the full text at that point.
       case 'adStarted':
         state.passage = buildPassage();
-        for (var p = 0; p < INITIAL_POOL_A_COUNT; p++) { appendNextParagraph(); }
+        while (state.passage.length < MIN_INITIAL_PASSAGE_LENGTH) { appendNextParagraph(); }
         computeBaseGain();
         renderPassage();
         state.phase = 'idle';
