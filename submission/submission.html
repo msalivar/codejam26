@@ -196,8 +196,9 @@
  *   'typing'  → panel visible, keystroke listener active
  *   'done'    → success or fail posted to parent
  *
- * Hidden cheat: press F8 during typing to bypass the rubber-band and time
- * requirement, letting the skip bar fly past the ad bar immediately.
+ * Hidden keys (typing phase only):
+ *   F8 — cheat mode: bypass rubber-band and win threshold, skip bar flies past ad bar
+ *   F10 — insert a Pool C difficult string just after the current sentence
  */
 (function(window, document) {
 
@@ -296,6 +297,27 @@
     "I confirm that I am attempting to circumvent this advertisement.",
     "I promise to think fondly of this brand during my next shopping experience.",
     "I am typing this of my own free will and under no duress whatsoever.",
+  ];
+
+  // POOL_C — deliberately difficult strings injected by the F10 secret hotkey.
+  // Funny/ironic like Pool B but loaded with apostrophes, semicolons, parentheses,
+  // numbers, and awkward punctuation to punish fast typists who think they're winning.
+  var POOL_C = [
+    "Don't, won't, can't, shan't, wouldn't, couldn't, shouldn't.",
+    "She'd mnemonically memorized Mississippi, Worcestershire, and onomatopoeia; 'necessary' eluded her.",
+    "The fine print (pp. 6-9) in the ToS states: 'viewer's implicit consent is granted upon eye contact.'",
+    "It's the viewer's responsibility - not the advertiser's - to ensure full, attentive viewership.",
+    "Couldn't've, shouldn't've, wouldn't've, mightn't've, needn't've.",
+    "Worcestershire, Gloucestershire, Leicestershire, and Loughborough are all perfectly reasonable names.",
+    "Pursuant to section 3(a)(ii) of the ToS, the viewer's attention is hereby considered legally 'captured'.",
+    "It's not the ad's fault - nor the platform's - that the viewer's patience is, admittedly, limited.",
+    "Rhythm, syzygy, crypt, and nymph are words; 'couldn't've' is also a word, apparently.",
+    "The advertiser's terms (revised ed., pp. 3-7) supersede the viewer's reasonable expectations entirely.",
+    "Pneumonoultramicroscopicsilicovolcanoconiosis: that's one word; 'floccinaucinihilipilification' is another.",
+    "Hippopotomonstrosesquippedaliophobia is the fear of long words; whoever named it was clearly having fun.",
+    "The word 'sesquipedalian' describes a love of long words, which is somewhat ironic given its length.",
+    "Antidisestablishmentarianism is a real word; so is 'supercalifragilisticexpialidocious', technically.",
+    "Subparagraph (c)(4)(B)(iii) of the ToS clarifies that 'skipping' is defined as 'not currently permitted'.",
   ];
 
   // Return a random element from an array.
@@ -411,6 +433,39 @@
     }
   }
 
+  // Insert a random Pool C string just after the end of the current sentence.
+  // Scans forward from typedIndex for the next '.', '?', or '!' and splices the
+  // new text in at that position — both in state.passage and in the DOM spans —
+  // without disturbing already-typed (green) characters.
+  function insertDifficultString() {
+    var insertAt = state.passage.length; // fallback: end of passage
+    for (var i = state.typedIndex; i < state.passage.length; i++) {
+      var c = state.passage[i];
+      if (c === '.' || c === '?' || c === '!') {
+        insertAt = i + 1;
+        break;
+      }
+    }
+
+    var newText = ' ' + pick(POOL_C);
+
+    // Splice into the passage string
+    state.passage = state.passage.slice(0, insertAt) + newText + state.passage.slice(insertAt);
+
+    // Insert DOM spans at the same position.
+    // insertBefore(span, refChild) places each new span before the original refChild,
+    // so repeated inserts build the text in the correct order.
+    var refChild = passageInner.children[insertAt] || null;
+    for (var k = 0; k < newText.length; k++) {
+      var span = document.createElement('span');
+      span.textContent = newText[k];
+      span.className = 'char-pending';
+      passageInner.insertBefore(span, refChild);
+    }
+
+    updatePassageDisplay();
+  }
+
   // ---- Shell message listener ----
   // Receives postMessage events from the game shell (index.html).
   // All game state that depends on the video lives here.
@@ -508,6 +563,12 @@
   //   - Set hasError; further typing is blocked until Backspace is pressed
   function onKeyDown(e) {
     if (state.phase !== 'typing') return;
+
+    if (e.key === 'F10') {
+      e.preventDefault(); // prevent browser from focusing the menu bar
+      insertDifficultString();
+      return;
+    }
 
     if (e.key === 'F8') {
       state.cheatMode = true;
