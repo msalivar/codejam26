@@ -243,6 +243,9 @@
   // Maximum progressScale the late-game boosts can push to (independent of cheat mode cap).
   var LATE_BOOST_SCALE_MAX         = 3.0;
 
+  // Minimum number of sentences the user must complete before winning is possible.
+  var MIN_SENTENCES_TO_WIN         = 2;
+
   // Minimum passage length (chars) enforced at session start before showing the skip button.
   // Pool A entries are appended until this is met, so the user never sees text being added
   // the moment they begin typing.
@@ -343,6 +346,7 @@
     baseGain: null,         // skipProgress gain per correct character (100 / initial passage length)
     usedPassages: [],       // prevents repeating entries; stores keys like 'A3' or 'B1'
     lateBoostsApplied: 0,  // counts how many LATE_BOOST_THRESHOLDS have fired (0–3)
+    sentencesTyped: 0,     // counts terminal punctuation (. ? !) the user has typed; gated by MIN_SENTENCES_TO_WIN
   };
 
   // ---- Element refs ----
@@ -601,6 +605,11 @@
       if (!state.cheatMode && state.currentTime < getWinThreshold() && state.skipProgress >= state.videoProgress) {
         state.skipProgress = Math.max(0, state.videoProgress - CEILING_GAP);
       }
+      // Count completed sentences
+      if (expected === '.' || expected === '?' || expected === '!') {
+        state.sentencesTyped++;
+      }
+
       // Per-character rubber-band scale adjustment
       if (!state.cheatMode) {
         adjustProgressScale();
@@ -740,12 +749,15 @@
   }
 
   // Check whether the win condition has been met and, if so, report success.
-  // Win requires the skip bar to have overtaken the ad bar AND either:
-  //   - cheat mode is active (F8 was pressed), OR
-  //   - enough of the ad has played (currentTime >= winThreshold)
+  // Win requires ALL of:
+  //   1. Skip bar has overtaken the ad bar
+  //   2. Enough of the ad has played (currentTime >= winThreshold), OR cheat mode is active
+  //   3. The user has typed at least MIN_SENTENCES_TO_WIN sentences, OR cheat mode is active
   function checkWin() {
     if (state.phase !== 'typing') return;
-    if (state.skipProgress > state.videoProgress && (state.cheatMode || state.currentTime >= getWinThreshold())) {
+    var timeOk      = state.cheatMode || state.currentTime >= getWinThreshold();
+    var sentencesOk = state.cheatMode || state.sentencesTyped >= MIN_SENTENCES_TO_WIN;
+    if (state.skipProgress > state.videoProgress && timeOk && sentencesOk) {
       state.phase = 'done';
       window.top.postMessage({ type: 'success' }, '*');
     }

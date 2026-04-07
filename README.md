@@ -10,7 +10,7 @@ A **Skip** progress bar and an **Ad** progress bar race across the screen. To sk
 
 The difficulty adjusts automatically to keep the skip bar hovering just behind the ad bar. Type too fast and it slows you down. Fall too far behind and it helps you catch up — but only a little.
 
-You also can't win too early. Skipping is only possible after at least 30% of the ad has played (capped at 30 seconds on longer ads). Before that, no matter how fast you type, the skip bar is hard-capped just below the ad bar.
+You also can't win too early. Skipping is only possible after at least 30% of the ad has played (capped at 30 seconds on longer ads), and only after completing at least 2 full sentences. Before that, no matter how fast you type, the skip bar is hard-capped just below the ad bar.
 
 As the ad gets close to the end (70%, 80%, 90%), the typing gets a small speed boost to give the user a fighting chance.
 
