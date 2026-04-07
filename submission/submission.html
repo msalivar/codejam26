@@ -479,9 +479,10 @@
 
     switch (event.data.type) {
       // Ad has started playing — initialise passage and show the skip button.
-      // Two Pool A entries are pre-appended so there is plenty of visible text from
-      // the start. The spans they add are discarded when renderPassage() clears the
-      // DOM; state.passage already contains the full text at that point.
+      // Pool A entries are appended until passage reaches MIN_INITIAL_PASSAGE_LENGTH
+      // so the user doesn't see text being added on their very first keystrokes.
+      // The spans added by appendNextParagraph() are discarded when renderPassage()
+      // clears the DOM; state.passage already holds the full text by that point.
       case 'adStarted':
         state.passage = buildPassage();
         while (state.passage.length < MIN_INITIAL_PASSAGE_LENGTH) { appendNextParagraph(); }
@@ -522,7 +523,9 @@
             console.log('[skipgame] win threshold reached at', state.currentTime.toFixed(2) + 's (target: ' + winLogThreshold.toFixed(2) + 's)');
           }
         }
-        // One-time speed boosts at 70%, 80%, 90% of the ad to help the user win late
+        // One-time speed boosts at 70%, 80%, 90% of the ad to help the user win late.
+        // lateBoostsApplied acts as both a counter and a pointer into LATE_BOOST_THRESHOLDS,
+        // so each threshold fires exactly once and in order without needing separate flags.
         if (state.phase === 'typing' && state.lateBoostsApplied < LATE_BOOST_THRESHOLDS.length) {
           if (state.videoProgress >= LATE_BOOST_THRESHOLDS[state.lateBoostsApplied]) {
             state.progressScale = Math.min(LATE_BOOST_SCALE_MAX, state.progressScale + LATE_BOOST_AMOUNT);
@@ -601,11 +604,20 @@
       // Per-character progress gain
       var gain = state.baseGain * state.progressScale;
       state.skipProgress = Math.min(100, state.skipProgress + gain);
-      // Hard ceiling: car must never visually pass the flag before win threshold
-      if (!state.cheatMode && state.currentTime < getWinThreshold() && state.skipProgress >= state.videoProgress) {
+      // Hard ceiling: if any win condition is unmet, clamp the skip bar just below
+      // the ad bar and penalise progressScale so the user must earn speed back.
+      // NOTE: sentencesTyped is intentionally incremented AFTER this check so that
+      // the ceiling is still active on the keystroke that completes the final required
+      // sentence. checkWin() below sees the updated count, so the win can still
+      // trigger on the very next correct character.
+      var winConditionsMet = state.currentTime >= getWinThreshold() && state.sentencesTyped >= MIN_SENTENCES_TO_WIN;
+      if (!state.cheatMode && !winConditionsMet && state.skipProgress >= state.videoProgress) {
         state.skipProgress = Math.max(0, state.videoProgress - CEILING_GAP);
+        state.progressScale = Math.max(INITIAL_PROGRESS_SCALE, state.progressScale * 0.75);
       }
-      // Count completed sentences
+
+      // Count completed sentences (terminal punctuation = sentence boundary).
+      // Incremented after the ceiling check — see note above.
       if (expected === '.' || expected === '?' || expected === '!') {
         state.sentencesTyped++;
       }
