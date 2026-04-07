@@ -259,12 +259,10 @@
     "How vexingly quick daft zebras jump.",
     "Sphinx of black quartz, judge my vow.",
     "The five boxing wizards jump quickly.",
-    "Jackdaws love my big sphinx of quartz.",
     "A wizard's job is to vex chumps quickly in fog.",
     "Blowzy red vixens fight for a quick jump.",
     "The jay, pig, fox, zebra and my wolves quack.",
     "Jinxed wizards pluck ivy from the big quilt.",
-    "Two driven jocks help fax my big quiz.",
     "Grumpy wizards make toxic brew for the evil queen and jack.",
     "And hast thou slain the Jabberwock?",
     "Twas brillig, and the slithy toves did gyre and gimble in the wabe.",
@@ -285,18 +283,17 @@
     "Please kiss your dog on the nose and give Miller a good scratch behind the ears.",
     "Hot dog water is the beverage of choice for mother toad.",
     "It is not a cult. It is simply a group of people who believe in bean work.",
-    "I put mayonnaise on my Pecan Sandies every morning and I regret nothing.",
+    "I put mayonnaise on my pecan sandies every morning and I regret nothing.",
   ];
 
   var POOL_B = [
-    "I hereby confirm that I have watched this advertisement in its entirety.",
-    "I understand that advertising makes free content possible and I am grateful.",
-    "By typing these words, I agree to all applicable terms and conditions.",
-    "I acknowledge the right of this platform to show me additional advertisements at any time.",
-    "I am a real human person who enjoys watching advertisements.",
-    "I do not skip ads. I find them enriching. This is a true statement.",
-    "I have never once clicked away from an ad before it finished.",
-    "I confirm that I am not attempting to circumvent this advertisement.",
+    "I do not consent to this advertisement.",
+    "Advertising makes free content possible and I am grateful.",
+    "I agree to all terms and conditions.",
+    "I acknowledge the right of this platform to show me advertisements at any time.",
+    "I am a real human who enjoys watching advertisements.",
+    "I find ads enriching, but I am simply too busy right now.",
+    "I confirm that I am attempting to circumvent this advertisement.",
     "I promise to think fondly of this brand during my next shopping experience.",
     "I am typing this of my own free will and under no duress whatsoever.",
   ];
@@ -372,12 +369,16 @@
     return getWinThreshold() * SLOW_STOP_TO_WIN_RATIO;
   }
 
-  // Compute per-character skipProgress gain, locked to the initial passage length.
-  // Locking to the initial length means appending POOL_A text later doesn't reduce
-  // the gain per keystroke — the bar still moves at the same rate regardless of how
-  // much text has been added.
+  // Compute per-character skipProgress gain, scaled to both passage length and video duration.
+  // Locking to the initial passage length means appending POOL_A text later doesn't dilute gain.
+  // Scaling by duration keeps difficulty consistent across ad lengths — a 15s ad gives
+  // proportionally more gain per character than a 60s ad, so the skip bar always moves at
+  // roughly the same speed relative to the ad bar regardless of how fast the video plays.
+  // Called once at adStarted (using FALLBACK_VIDEO_DURATION) and again on the first timeupdate
+  // once the real duration is known.
   function computeBaseGain() {
-    state.baseGain = 100 / state.passage.length;
+    var duration = state.videoDuration || FALLBACK_VIDEO_DURATION;
+    state.baseGain = (100 / state.passage.length) * (FALLBACK_VIDEO_DURATION / duration);
   }
 
   // Append one random POOL_A entry to the live passage so the user never runs out
@@ -444,6 +445,7 @@
         state.currentTime = event.data.currentTime;
         if (duration && !state.videoDuration) {
           state.videoDuration = duration;
+          computeBaseGain(); // recalculate now that real duration is known
         }
         if (duration && duration > 0) {
           state.videoProgress = (state.currentTime / duration) * 100;
@@ -476,6 +478,9 @@
   skipBtn.addEventListener('click', function() {
     if (state.phase !== 'idle') return;
     state.phase = 'typing';
+    // Start the skip bar just behind wherever the ad has reached, so a late click
+    // doesn't strand the user at 0% while the ad bar is already well ahead.
+    state.skipProgress = Math.max(0, state.videoProgress - 1);
     skipBtn.style.display = 'none';
     typingPanel.classList.add('visible');
     promptLabel.style.opacity = '1';
@@ -586,11 +591,11 @@
         // Getting close to ceiling — moderate slowdown
         state.progressScale = Math.max(0.08, state.progressScale - 0.02);
       } else if (headroom > 15) {
-        // Far below ceiling — boost to catch up
-        state.progressScale = Math.min(1.6, state.progressScale + 0.07);
+        // Far below ceiling — boost to catch up; high ceiling so long ads can recover in reasonable time
+        state.progressScale = Math.min(2.5, state.progressScale + 0.07);
       } else if (headroom > 8) {
         // Moderately behind — solid boost
-        state.progressScale = Math.min(1.4, state.progressScale + 0.03);
+        state.progressScale = Math.min(1.8, state.progressScale + 0.03);
       } else if (gapToTarget > 10) {
         // Below target fraction — gentle boost
         state.progressScale = Math.min(1.2, state.progressScale + 0.01);
