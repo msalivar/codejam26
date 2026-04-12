@@ -197,59 +197,144 @@
  *   'done'    → success or fail posted to parent
  *
  * Hidden keys (typing phase only):
- *   F8 — cheat mode: bypass rubber-band and win threshold, skip bar flies past ad bar
- *   F10 — insert a Pool C difficult string just after the current sentence
+ *   CHEAT_KEY (default F8) — cheat mode: bypass rubber-band and win threshold, skip bar flies past ad bar
+ *   INJECT_DIFFICULT_KEY (default F10) — insert a Pool C difficult string just after the current sentence
  */
 (function(window, document) {
 
   // ---- Config ----
-  // Tunable values in one place for easy adjustment.
+  // All tunable constants live here. They are grouped by concern so you can
+  // find what you need without reading the implementation code.
+  //
+  // NOTE: The rubber-band controller (adjustProgressScale) contains its own
+  // fine-grained speed/brake thresholds inline. They are heavily interdependent
+  // and are documented there; adjust them only after you understand how the
+  // three timing phases work.
 
+  // -- Win / timing conditions --
+  //
   // Fraction of the ad's duration that must pass before winning is possible.
+  // Increase (e.g. 0.5) to force the user to sit through more of the ad.
+  // Decrease (e.g. 0.15) to allow an early escape on shorter ads.
   var WIN_THRESHOLD_FRACTION       = 0.30;
-  // Hard cap on the win threshold — even on a very long ad, winning unlocks by this time.
+  //
+  // Hard cap (seconds) on the win threshold so very long ads don't lock the
+  // user out for too long. Increase (e.g. 60) for a more punishing experience;
+  // decrease (e.g. 15) to cap the mandatory viewing window.
   var WIN_THRESHOLD_MAX_SECS       = 30;
-  // Slow-stop threshold as a fraction of the win threshold (slowdown stops here, boosts only after).
+  //
+  // The rubber-band slowdown stops at this fraction of the win threshold.
+  // Below this point, braking and boosting are both active. Above it, only
+  // boosting applies (helping a slow typist catch up without dragging a fast
+  // one back). Increase toward 1.0 to extend the braking phase; decrease
+  // toward 0 to remove braking almost entirely.
   var SLOW_STOP_TO_WIN_RATIO       = 0.75;
-  // Assumed ad duration (seconds) used before the real duration arrives from the shell.
+  //
+  // Assumed ad duration (seconds) used before the real duration arrives.
+  // If the shell takes a moment to send timeupdate events, this keeps the
+  // bar ratios reasonable in the meantime. Match your typical test video
+  // length; an off value only affects the first few frames.
   var FALLBACK_VIDEO_DURATION      = 60;
-
-  // Initial progressScale; starts below 1.0 so early typing doesn't outrun the ad.
-  var INITIAL_PROGRESS_SCALE       = 0.6;
-  // progressScale applied when cheat mode (F8) is activated.
-  var CHEAT_PROGRESS_SCALE         = 2.0;
-
-  // Rubber-band target: keep skip bar at this fraction of the ad bar.
-  var RUBBER_BAND_TARGET_FRACTION  = 0.7;
-  // Hard ceiling gap: clamp skip bar this many points below the ad bar before win threshold.
-  var CEILING_GAP                  = 0.1;
-
-  // Append a new POOL_A entry when this many untyped characters remain.
-  var APPEND_TRIGGER_CHARS         = 80;
-  // Delay (ms) before the "Type to skip" prompt fades out after the panel opens.
-  var PROMPT_FADE_DELAY_MS         = 4000;
-
-  // Clamp range for race icon positions so they stay within the visible bar track.
-  var ICON_POSITION_MIN            = 1;
-  var ICON_POSITION_MAX            = 99;
-
-  // localStorage key that persists the last-used POOL_B index across page loads.
-  var LOCALSTORAGE_LAST_B_KEY      = 'skipgame_lastB';
-
-  // videoProgress % thresholds at which a one-time speed boost is applied to help the user win.
-  var LATE_BOOST_THRESHOLDS        = [70, 80, 90];
-  // progressScale added at each late-game boost threshold (stacks across all three triggers).
-  var LATE_BOOST_AMOUNT            = 0.15;
-  // Maximum progressScale the late-game boosts can push to (independent of cheat mode cap).
-  var LATE_BOOST_SCALE_MAX         = 3.0;
-
-  // Minimum number of sentences the user must complete before winning is possible.
+  //
+  // Minimum number of complete sentences (ending in . ? !) the user must
+  // type before winning is possible, regardless of bar positions or timing.
+  // Increase to require more typing; set to 0 to remove the gate entirely.
   var MIN_SENTENCES_TO_WIN         = 2;
 
-  // Minimum passage length (chars) enforced at session start before showing the skip button.
-  // Pool A entries are appended until this is met, so the user never sees text being added
-  // the moment they begin typing.
+  // -- Speed / progress scale --
+  //
+  // Starting speed multiplier applied to the per-character gain. Keeping this
+  // below 1.0 prevents a fast typist from outrunning the ad bar immediately.
+  // Increase toward 1.0 for a gentler start; decrease toward 0.3 for a very
+  // sluggish opening that the rubber-band controller then lifts gradually.
+  var INITIAL_PROGRESS_SCALE       = 0.6;
+  //
+  // Speed multiplier locked in when the F8 cheat key is pressed.
+  // Any value above 1.0 guarantees rapid bar advancement; 2.0 is
+  // comfortable, 4.0+ is nearly instant.
+  var CHEAT_PROGRESS_SCALE         = 2.0;
+
+  // -- Rubber-band controller --
+  //
+  // Target position of the skip bar as a fraction of the ad bar's position.
+  // 0.7 keeps the skip car about 30% behind the flag, creating tension without
+  // feeling hopeless. Increase toward 1.0 to let the user nearly catch up;
+  // decrease toward 0.5 to keep them further behind.
+  var RUBBER_BAND_TARGET_FRACTION  = 0.7;
+  //
+  // When the skip bar would exceed the ad bar before win conditions are met,
+  // it is clamped to (videoProgress - CEILING_GAP). Increase (e.g. 5) for a
+  // more visible gap; decrease toward 0 to let the bars almost touch.
+  var CEILING_GAP                  = 0.1;
+  //
+  // When the ceiling clamp fires, progressScale is multiplied by this factor
+  // as a penalty. Values closer to 1.0 (e.g. 0.9) apply a gentle nudge;
+  // values closer to 0 (e.g. 0.5) apply a harsh brake.
+  var CEILING_PENALTY_FACTOR       = 0.75;
+  //
+  // How far behind the ad bar (in videoProgress %) the skip bar starts when
+  // the user first clicks "Skip Ad". A small offset (e.g. 1–3) prevents an
+  // instant win if the user clicks very late, without penalising an early click.
+  var SKIP_START_OFFSET            = 1;
+
+  // -- Late-game boosts --
+  //
+  // videoProgress % checkpoints at which a one-time speed boost fires to help
+  // the user win before the ad ends. Add/remove entries to change how many
+  // boosts are given and when. Values must be in ascending order.
+  var LATE_BOOST_THRESHOLDS        = [70, 80, 90];
+  //
+  // Amount added to progressScale at each boost checkpoint. Increase (e.g. 0.3)
+  // for larger, more noticeable jumps; decrease (e.g. 0.05) for subtle nudges.
+  var LATE_BOOST_AMOUNT            = 0.15;
+  //
+  // Maximum progressScale the late-game boosts can push to. Acts as a ceiling
+  // independent of cheat mode; increase (e.g. 5.0) to let boosts compound
+  // aggressively, decrease (e.g. 1.5) to keep the late game more controlled.
+  var LATE_BOOST_SCALE_MAX         = 3.0;
+
+  // -- Passage generation --
+  //
+  // Append a new POOL_A sentence when fewer than this many untyped characters
+  // remain. Increase (e.g. 150) for more lead time so appends are never
+  // visible mid-word; decrease (e.g. 40) to keep the buffer tighter.
+  var APPEND_TRIGGER_CHARS         = 80;
+  //
+  // Minimum passage length (characters) enforced at session start. POOL_A
+  // entries are appended until this is met so the user never sees text appear
+  // the moment they start typing. Increase for a longer initial buffer.
   var MIN_INITIAL_PASSAGE_LENGTH   = 200;
+
+  // -- UI / display --
+  //
+  // Duration (ms) before the "Type to skip" hint label fades out after the
+  // typing panel opens. Increase for a longer visible hint; set to 0 to hide
+  // it immediately.
+  var PROMPT_FADE_DELAY_MS         = 4000;
+  //
+  // Clamp range for race icon (car / flag) positions. Keeps the emoji inside
+  // the visible bar track. Widen the range (e.g. 0/100) to allow edge-clipping;
+  // narrow it (e.g. 5/95) to add more padding.
+  var ICON_POSITION_MIN            = 1;
+  var ICON_POSITION_MAX            = 99;
+  //
+  // localStorage key used to persist the last POOL_B index across page loads
+  // so the same opener is never shown in back-to-back sessions. Change the
+  // string if you want to reset persistence without clearing localStorage.
+  var LOCALSTORAGE_LAST_B_KEY      = 'skipgame_lastB';
+
+  // -- Secret hotkeys --
+  //
+  // Key that activates cheat mode: disables the rubber-band controller, removes
+  // the win-threshold and sentence-count gates, and sets progressScale to
+  // CHEAT_PROGRESS_SCALE so the skip bar overtakes the ad bar immediately.
+  // Change to any valid KeyboardEvent.key string (e.g. 'F9', 'F2').
+  var CHEAT_KEY                    = 'F8';
+  //
+  // Key that injects a random Pool C (difficult punctuation) string just after
+  // the current sentence, giving a judge or tester a way to crank up difficulty
+  // mid-session without reloading. Change to any valid KeyboardEvent.key string.
+  var INJECT_DIFFICULT_KEY         = 'F10';
 
   // ---- Paragraph pools ----
   //
@@ -543,7 +628,7 @@
     state.phase = 'typing';
     // Start the skip bar just behind wherever the ad has reached, so a late click
     // doesn't strand the user at 0% while the ad bar is already well ahead.
-    state.skipProgress = Math.max(0, state.videoProgress - 1);
+    state.skipProgress = Math.max(0, state.videoProgress - SKIP_START_OFFSET);
     skipBtn.style.display = 'none';
     typingPanel.classList.add('visible');
     promptLabel.style.opacity = '1';
@@ -556,7 +641,7 @@
   // Handle a keypress while the typing phase is active.
   //
   // Key routing:
-  //   F8        → enable cheat mode (bypasses rubber-band and win threshold)
+  //   CHEAT_KEY        → enable cheat mode (bypasses rubber-band and win threshold)
   //   Backspace → clear the current error (cursor does not retreat)
   //   Any other single character → attempt to match against the expected character
   //
@@ -572,13 +657,13 @@
   function onKeyDown(e) {
     if (state.phase !== 'typing') return;
 
-    if (e.key === 'F10') {
+    if (e.key === INJECT_DIFFICULT_KEY) {
       e.preventDefault(); // prevent browser from focusing the menu bar
       insertDifficultString();
       return;
     }
 
-    if (e.key === 'F8') {
+    if (e.key === CHEAT_KEY) {
       state.cheatMode = true;
       state.progressScale = CHEAT_PROGRESS_SCALE;
       return;
@@ -613,7 +698,7 @@
       var winConditionsMet = state.currentTime >= getWinThreshold() && state.sentencesTyped >= MIN_SENTENCES_TO_WIN;
       if (!state.cheatMode && !winConditionsMet && state.skipProgress >= state.videoProgress) {
         state.skipProgress = Math.max(0, state.videoProgress - CEILING_GAP);
-        state.progressScale = Math.max(INITIAL_PROGRESS_SCALE, state.progressScale * 0.75);
+        state.progressScale = Math.max(INITIAL_PROGRESS_SCALE, state.progressScale * CEILING_PENALTY_FACTOR);
       }
 
       // Count completed sentences (terminal punctuation = sentence boundary).
