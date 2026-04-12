@@ -257,10 +257,10 @@
   // -- Rubber-band controller --
   //
   // Target position of the skip bar as a fraction of the ad bar's position.
-  // 0.7 keeps the skip car about 30% behind the flag, creating tension without
+  // 0.8 keeps the skip car about 20% behind the flag, creating tension without
   // feeling hopeless. Increase toward 1.0 to let the user nearly catch up;
   // decrease toward 0.5 to keep them further behind.
-  var RUBBER_BAND_TARGET_FRACTION  = 0.7;
+  var RUBBER_BAND_TARGET_FRACTION  = 0.8;
   //
   // When the skip bar would exceed the ad bar before win conditions are met,
   // it is clamped to (videoProgress - CEILING_GAP). Increase (e.g. 5) for a
@@ -608,7 +608,7 @@
             console.log('[skipgame] win threshold reached at', state.currentTime.toFixed(2) + 's (target: ' + winLogThreshold.toFixed(2) + 's)');
           }
         }
-        // One-time speed boosts at 70%, 80%, 90% of the ad to help the user win late.
+        // One-time speed boosts at 60%, 70%, 80%, 90% of the ad to help the user win late.
         // lateBoostsApplied acts as both a counter and a pointer into LATE_BOOST_THRESHOLDS,
         // so each threshold fires exactly once and in order without needing separate flags.
         if (state.phase === 'typing' && state.lateBoostsApplied < LATE_BOOST_THRESHOLDS.length) {
@@ -774,7 +774,7 @@
         state.progressScale = Math.min(1.2, state.progressScale + 0.01);
       } else if (gapToTarget < -10) {
         // Well above target fraction — hard brake; fast typists who overshoot
-        // by a wide margin get pulled back quickly toward the 70% zone.
+        // by a wide margin get pulled back quickly toward the 80% zone.
         state.progressScale = Math.max(0.15, state.progressScale - 0.06);
       } else if (gapToTarget < -5) {
         // Moderately above target fraction — solid brake
