@@ -282,7 +282,7 @@
   // videoProgress % checkpoints at which a one-time speed boost fires to help
   // the user win before the ad ends. Add/remove entries to change how many
   // boosts are given and when. Values must be in ascending order.
-  var LATE_BOOST_THRESHOLDS        = [70, 80, 90];
+  var LATE_BOOST_THRESHOLDS        = [60, 70, 80, 90];
   //
   // Amount added to progressScale at each boost checkpoint. Increase (e.g. 0.3)
   // for larger, more noticeable jumps; decrease (e.g. 0.05) for subtle nudges.
@@ -759,7 +759,12 @@
         // Getting close to ceiling — moderate slowdown
         state.progressScale = Math.max(0.08, state.progressScale - 0.02);
       } else if (headroom > 15) {
-        // Far below ceiling — boost to catch up; high ceiling so long ads can recover in reasonable time
+        // Far below ceiling — boost to catch up. If progressScale was penalised
+        // below its starting value by the above-target braking, reset it first
+        // so the user isn't doubly punished for falling back after an overshoot.
+        if (state.progressScale < INITIAL_PROGRESS_SCALE) {
+          state.progressScale = INITIAL_PROGRESS_SCALE;
+        }
         state.progressScale = Math.min(2.5, state.progressScale + 0.07);
       } else if (headroom > 8) {
         // Moderately behind — solid boost
@@ -767,9 +772,13 @@
       } else if (gapToTarget > 10) {
         // Below target fraction — gentle boost
         state.progressScale = Math.min(1.2, state.progressScale + 0.01);
+      } else if (gapToTarget < -10) {
+        // Well above target fraction — hard brake; fast typists who overshoot
+        // by a wide margin get pulled back quickly toward the 70% zone.
+        state.progressScale = Math.max(0.15, state.progressScale - 0.06);
       } else if (gapToTarget < -5) {
-        // Above target fraction but not near ceiling — small nudge down
-        state.progressScale = Math.max(0.3, state.progressScale - 0.01);
+        // Moderately above target fraction — solid brake
+        state.progressScale = Math.max(0.25, state.progressScale - 0.03);
       }
     } else if (state.currentTime < getWinThreshold()) {
       // Slowdown phase over — only boost if falling behind
