@@ -10,7 +10,7 @@ A **Skip** progress bar and an **Ad** progress bar race across the screen. To sk
 
 The skip bar is hard-capped at 80% of the ad bar's position until win conditions are met — no matter how fast you type, you can't pass it. A rubber-band controller adjusts typing speed to keep the bar near that 80% mark: fall too far behind and it helps you catch up; overshoot and it eases off.
 
-You also can't win too early. Skipping is only possible after at least 30% of the ad has played (capped at 30 seconds on longer ads), and only after typing at least 100 characters — roughly one opening sentence plus one filler sentence. The character requirement is waived once 60% of the ad has played. Before those gates open, the skip bar is hard-capped just below the ad bar no matter how fast you type.
+You also can't win too early. Skipping is only possible after at least 30% of the ad has played (capped at 30 seconds on longer ads), and only after typing at least 100 characters — roughly one opening sentence plus one filler sentence. The character requirement is waived once 60% of the ad has played or 60 seconds have elapsed, whichever comes first. Before those gates open, the skip bar is hard-capped just below the ad bar no matter how fast you type.
 
 As the ad gets close to the end (60%, 70%, 80%, 90%), the typing gets a small speed boost to give the user a fighting chance.
 
