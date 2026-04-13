@@ -185,10 +185,14 @@
  * When the user clicks "Skip Ad", the normal skip button is replaced by a
  * typing-challenge panel at the bottom of the screen. The user must type a
  * passage to advance a "Skip" progress bar that races against the ad's
- * progress bar. A rubber-band difficulty controller keeps the skip bar
- * tantalisingly close to — but slightly behind — the ad bar until a win
- * threshold is reached (30% of the ad's duration). After that, a fast enough
- * typist can overtake the ad bar and trigger a successful skip.
+ * progress bar. Before win conditions are met, the skip bar is hard-clamped
+ * at RUBBER_BAND_TARGET_FRACTION (80%) of the ad bar's position — a fast
+ * typist can reach that ceiling but cannot pass it. A rubber-band controller
+ * manages progressScale to keep the skip bar comfortably near the 80% mark.
+ * Win conditions open after 30% of the ad has played AND the user has typed
+ * MIN_CHARS_TO_WIN characters (waived once videoProgress hits
+ * CHARS_GATE_VIDEO_OVERRIDE). After that, the clamp releases and a fast
+ * enough typist can overtake the ad bar and trigger a successful skip.
  *
  * Phases:
  *   'waiting' → adStarted received
@@ -206,10 +210,9 @@
   // All tunable constants live here. They are grouped by concern so you can
   // find what you need without reading the implementation code.
   //
-  // NOTE: The rubber-band controller (adjustProgressScale) contains its own
-  // fine-grained speed/brake thresholds inline. They are heavily interdependent
-  // and are documented there; adjust them only after you understand how the
-  // three timing phases work.
+  // NOTE: The rubber-band controller (adjustProgressScale) uses a simple
+  // proportional spring — no hard-coded brake thresholds. The hard position
+  // clamp in onKeyDown handles the ceiling; the controller only manages speed.
 
   // -- Win / timing conditions --
   //
@@ -223,11 +226,12 @@
   // decrease (e.g. 15) to cap the mandatory viewing window.
   var WIN_THRESHOLD_MAX_SECS       = 30;
   //
-  // The rubber-band slowdown stops at this fraction of the win threshold.
-  // Below this point, braking and boosting are both active. Above it, only
-  // boosting applies (helping a slow typist catch up without dragging a fast
-  // one back). Increase toward 1.0 to extend the braking phase; decrease
-  // toward 0 to remove braking almost entirely.
+  // The rubber-band controller halves its elasticity at this fraction of the
+  // win threshold. Below this point full elasticity applies, giving stronger
+  // boosts toward the target. Above it elasticity is halved so the scale
+  // climbs more slowly and the skip bar doesn't overshoot the 80% clamp by
+  // as much. Increase toward 1.0 to extend the full-elasticity phase; decrease
+  // toward 0 to halve elasticity almost immediately.
   var SLOW_STOP_TO_WIN_RATIO       = 0.75;
   //
   // Assumed ad duration (seconds) used before the real duration arrives.
@@ -236,10 +240,16 @@
   // length; an off value only affects the first few frames.
   var FALLBACK_VIDEO_DURATION      = 60;
   //
-  // Minimum number of complete sentences (ending in . ? !) the user must
-  // type before winning is possible, regardless of bar positions or timing.
+  // Minimum number of characters the user must type before winning is possible,
+  // regardless of bar positions or timing. More consistent than a sentence count
+  // since sentence lengths vary. ~100 chars ≈ one Pool B opener + one Pool A entry.
   // Increase to require more typing; set to 0 to remove the gate entirely.
-  var MIN_SENTENCES_TO_WIN         = 2;
+  var MIN_CHARS_TO_WIN             = 100;
+  //
+  // videoProgress % at which the MIN_CHARS_TO_WIN requirement is waived. If the
+  // ad has already played this far the user has sat through enough that the char
+  // gate no longer applies. Set to 100 to always enforce it; 0 to never enforce it.
+  var CHARS_GATE_VIDEO_OVERRIDE    = 60;
 
   // -- Speed / progress scale --
   //
@@ -262,20 +272,13 @@
   // decrease toward 0.5 to keep them further behind.
   var RUBBER_BAND_TARGET_FRACTION  = 0.8;
   //
-  // When the skip bar would exceed the ad bar before win conditions are met,
-  // it is clamped to (videoProgress - CEILING_GAP). Increase (e.g. 5) for a
-  // more visible gap; decrease toward 0 to let the bars almost touch.
-  var CEILING_GAP                  = 0.1;
-  //
-  // When the ceiling clamp fires, progressScale is multiplied by this factor
-  // as a penalty. Values closer to 1.0 (e.g. 0.9) apply a gentle nudge;
-  // values closer to 0 (e.g. 0.5) apply a harsh brake.
-  var CEILING_PENALTY_FACTOR       = 0.75;
-  //
-  // How far behind the ad bar (in videoProgress %) the skip bar starts when
-  // the user first clicks "Skip Ad". A small offset (e.g. 1–3) prevents an
-  // instant win if the user clicks very late, without penalising an early click.
-  var SKIP_START_OFFSET            = 1;
+  // How strongly the controller pulls skipProgress toward the target each character.
+  // The adjustment per keystroke = gapToTarget × ELASTICITY, so larger gaps produce
+  // larger corrections automatically. Increase (e.g. 0.008) for snappier tracking;
+  // decrease (e.g. 0.002) for a looser, more gradual spring.
+  var RUBBER_BAND_ELASTICITY       = 0.005;
+  // (Skip bar starts at RUBBER_BAND_TARGET_FRACTION of videoProgress on click,
+  // placing the controller in a neutral state from the first keystroke.)
 
   // -- Late-game boosts --
   //
@@ -326,7 +329,7 @@
   // -- Secret hotkeys --
   //
   // Key that activates cheat mode: disables the rubber-band controller, removes
-  // the win-threshold and sentence-count gates, and sets progressScale to
+  // the win-threshold and char-count gates, and sets progressScale to
   // CHEAT_PROGRESS_SCALE so the skip bar overtakes the ad bar immediately.
   // Change to any valid KeyboardEvent.key string (e.g. 'F9', 'F2').
   var CHEAT_KEY                    = 'F8';
@@ -431,7 +434,7 @@
     baseGain: null,         // skipProgress gain per correct character (100 / initial passage length)
     usedPassages: [],       // prevents repeating entries; stores keys like 'A3' or 'B1'
     lateBoostsApplied: 0,  // counts how many LATE_BOOST_THRESHOLDS have fired (0–3)
-    sentencesTyped: 0,     // counts terminal punctuation (. ? !) the user has typed; gated by MIN_SENTENCES_TO_WIN
+    winConditionsReached: false, // flipped once when both win gates open; triggers a one-time progressScale reset
   };
 
   // ---- Element refs ----
@@ -473,9 +476,9 @@
     return Math.min(fraction, WIN_THRESHOLD_MAX_SECS);
   }
 
-  // The time (in seconds) at which the rubber-band slowdown logic stops applying.
-  // Before this point the controller actively brakes the skip bar; after this point
-  // it only boosts (helping a slow typist catch up, never dragging a fast one back).
+  // The time (in seconds) at which the rubber-band controller halves its elasticity.
+  // Before this point full elasticity applies; after this point elasticity is halved
+  // so the skip bar approaches the 80% clamp more gently.
   // Defined as a fixed ratio of the win threshold so both always stay in sync.
   function getSlowStopThreshold() {
     return getWinThreshold() * SLOW_STOP_TO_WIN_RATIO;
@@ -626,9 +629,9 @@
   skipBtn.addEventListener('click', function() {
     if (state.phase !== 'idle') return;
     state.phase = 'typing';
-    // Start the skip bar just behind wherever the ad has reached, so a late click
-    // doesn't strand the user at 0% while the ad bar is already well ahead.
-    state.skipProgress = Math.max(0, state.videoProgress - SKIP_START_OFFSET);
+    // Start the skip bar at the rubber-band target position so the controller
+    // begins in a neutral state rather than immediately hard-braking from the ceiling.
+    state.skipProgress = Math.max(0, state.videoProgress * RUBBER_BAND_TARGET_FRACTION);
     skipBtn.style.display = 'none';
     typingPanel.classList.add('visible');
     promptLabel.style.opacity = '1';
@@ -689,22 +692,17 @@
       // Per-character progress gain
       var gain = state.baseGain * state.progressScale;
       state.skipProgress = Math.min(100, state.skipProgress + gain);
-      // Hard ceiling: if any win condition is unmet, clamp the skip bar just below
-      // the ad bar and penalise progressScale so the user must earn speed back.
-      // NOTE: sentencesTyped is intentionally incremented AFTER this check so that
-      // the ceiling is still active on the keystroke that completes the final required
-      // sentence. checkWin() below sees the updated count, so the win can still
-      // trigger on the very next correct character.
-      var winConditionsMet = state.currentTime >= getWinThreshold() && state.sentencesTyped >= MIN_SENTENCES_TO_WIN;
-      if (!state.cheatMode && !winConditionsMet && state.skipProgress >= state.videoProgress) {
-        state.skipProgress = Math.max(0, state.videoProgress - CEILING_GAP);
-        state.progressScale = Math.max(INITIAL_PROGRESS_SCALE, state.progressScale * CEILING_PENALTY_FACTOR);
-      }
-
-      // Count completed sentences (terminal punctuation = sentence boundary).
-      // Incremented after the ceiling check — see note above.
-      if (expected === '.' || expected === '?' || expected === '!') {
-        state.sentencesTyped++;
+      // Hard clamp: before win conditions are met, cap the skip bar at the
+      // rubber-band target (80% of the ad bar). This replaces the old soft
+      // braking logic — no need to fight progressScale when the position is
+      // simply bounded. After both gates open the clamp releases and the user
+      // can push through to a win.
+      // Hard clamp: typedIndex is already incremented above, so the char-count
+      // gate (MIN_CHARS_TO_WIN) is evaluated against the updated value here.
+      var winConditionsMet = state.currentTime >= getWinThreshold() && state.typedIndex >= MIN_CHARS_TO_WIN || state.videoProgress >= CHARS_GATE_VIDEO_OVERRIDE;
+      if (!state.cheatMode && !winConditionsMet) {
+        var cap = state.videoProgress * RUBBER_BAND_TARGET_FRACTION;
+        if (state.skipProgress > cap) { state.skipProgress = cap; }
       }
 
       // Per-character rubber-band scale adjustment
@@ -728,77 +726,63 @@
 
   // Rubber-band difficulty controller — called on every correct character.
   //
-  // Adjusts progressScale so that the skip bar hovers close to — but just
-  // behind — the ad bar. The target position is RUBBER_BAND_TARGET_FRACTION of videoProgress.
-  // Firing per character (rather than per word) produces smooth, continuous drift
-  // instead of discrete jumps at word boundaries.
+  // The skip bar is hard-clamped at RUBBER_BAND_TARGET_FRACTION of the ad bar
+  // before win conditions are met, so this controller only needs to handle two jobs:
   //
-  // Deltas are ~1/5 of the equivalent per-word values, giving the same net effect
-  // over a typical word without large step changes.
+  //   Before win conditions: boost progressScale when skip is below the target so
+  //     the user can reach and hold it. No braking needed — the clamp does that.
   //
-  // Three timing phases:
-  //   Before slowStopThreshold: full control — both slowdown and boost tiers active.
-  //   Between slowStopThreshold and winThreshold: boost only.
-  //   After winThreshold: win is possible; gentle boost if still behind.
+  //   After win conditions: boost toward the 100% ceiling so the user can push
+  //     through to a win. Ceiling-proximity braking near 100% keeps it from being instant.
   //
-  // `headroom`    = videoProgress - skipProgress  (distance from the ad bar ceiling)
-  // `gapToTarget` = targetSkip - skipProgress     (distance from the target fraction)
+  // Adjustment = gapToTarget (as % of videoProgress) × ELASTICITY, so the step
+  // size scales with the actual gap at each character typed.
   function adjustProgressScale() {
-    var targetSkip  = state.videoProgress * RUBBER_BAND_TARGET_FRACTION;
-    var gapToTarget = targetSkip - state.skipProgress;
-    var headroom    = state.videoProgress - state.skipProgress;
+    var targetSkip   = state.videoProgress * RUBBER_BAND_TARGET_FRACTION;
+    var headroom     = state.videoProgress - state.skipProgress;
+    var ceilingRatio = headroom / Math.max(1, state.videoProgress);
+    // Gap expressed as % of videoProgress — equal magnitude at any point in the ad.
+    var gapToTarget  = state.videoProgress > 0
+      ? (targetSkip - state.skipProgress) / state.videoProgress * 100
+      : 0;
 
-    if (state.currentTime < getSlowStopThreshold()) {
-      if (headroom <= 0) {
-        // Past ceiling — brake hard
+    var winConditionsMet = state.currentTime >= getWinThreshold() &&
+                           state.typedIndex >= MIN_CHARS_TO_WIN || state.videoProgress >= CHARS_GATE_VIDEO_OVERRIDE;
+
+    if (winConditionsMet) {
+      // On the first character after win conditions open, reset progressScale to the
+      // default so the push from 80% to 100% starts at a controlled speed.
+      if (!state.winConditionsReached) {
+        state.winConditionsReached = true;
+        state.progressScale = INITIAL_PROGRESS_SCALE;
+      }
+      // Ceiling-proximity braking: slow the push toward 100% so the win isn't instant.
+      if (ceilingRatio <= 0) {
         state.progressScale = Math.max(0.03, state.progressScale - 0.05);
-      } else if (headroom < 3) {
-        // Very close to ceiling — aggressive slowdown
+        return;
+      }
+      if (ceilingRatio < 0.02) {
         state.progressScale = Math.max(0.05, state.progressScale - 0.04);
-      } else if (headroom < 8) {
-        // Getting close to ceiling — moderate slowdown
+        return;
+      }
+      if (ceilingRatio < 0.08) {
         state.progressScale = Math.max(0.08, state.progressScale - 0.02);
-      } else if (headroom > 15) {
-        // Far below ceiling — boost to catch up. If progressScale was penalised
-        // below its starting value by the above-target braking, reset it first
-        // so the user isn't doubly punished for falling back after an overshoot.
+        return;
+      }
+      // Boost toward ceiling proportional to remaining distance.
+      var adjustment = ceilingRatio * 100 * RUBBER_BAND_ELASTICITY;
+      state.progressScale = Math.min(2.5, state.progressScale + adjustment);
+    } else {
+      // Pre-win: boost when below target; no braking (clamp handles the ceiling).
+      if (gapToTarget > 0) {
+        var elasticity = state.currentTime >= getSlowStopThreshold()
+          ? RUBBER_BAND_ELASTICITY * 0.5
+          : RUBBER_BAND_ELASTICITY;
+        // Reset if progressScale somehow fell below starting value.
         if (state.progressScale < INITIAL_PROGRESS_SCALE) {
           state.progressScale = INITIAL_PROGRESS_SCALE;
         }
-        state.progressScale = Math.min(2.5, state.progressScale + 0.07);
-      } else if (headroom > 8) {
-        // Moderately behind — solid boost
-        state.progressScale = Math.min(1.8, state.progressScale + 0.03);
-      } else if (gapToTarget > 10) {
-        // Below target fraction — gentle boost
-        state.progressScale = Math.min(1.2, state.progressScale + 0.01);
-      } else if (gapToTarget < -5) {
-        // Above target fraction — brake to pull skip back toward the 80% zone.
-        // Only active before win conditions are met; once both gates are open
-        // the user must be able to push through to a win without this resistance.
-        var winConditionsMet = state.currentTime >= getWinThreshold() &&
-                               state.sentencesTyped >= MIN_SENTENCES_TO_WIN;
-        if (!winConditionsMet) {
-          if (gapToTarget < -10) {
-            // Well above target — hard brake
-            state.progressScale = Math.max(0.15, state.progressScale - 0.06);
-          } else {
-            // Moderately above target — solid brake
-            state.progressScale = Math.max(0.25, state.progressScale - 0.03);
-          }
-        }
-      }
-    } else if (state.currentTime < getWinThreshold()) {
-      // Slowdown phase over — only boost if falling behind
-      if (headroom > 15) {
-        state.progressScale = Math.min(1.6, state.progressScale + 0.05);
-      } else if (headroom > 8) {
-        state.progressScale = Math.min(1.4, state.progressScale + 0.02);
-      }
-    } else {
-      // Win threshold passed — gentle boost if still behind
-      if (state.skipProgress < state.videoProgress && gapToTarget > 20) {
-        state.progressScale = Math.min(1.5, state.progressScale + 0.02);
+        state.progressScale = Math.min(2.5, state.progressScale + gapToTarget * elasticity);
       }
     }
   }
@@ -866,11 +850,12 @@
   // Win requires ALL of:
   //   1. Skip bar has overtaken the ad bar
   //   2. Enough of the ad has played (currentTime >= winThreshold), OR cheat mode is active
-  //   3. The user has typed at least MIN_SENTENCES_TO_WIN sentences, OR cheat mode is active
+  //   3. The user has typed at least MIN_CHARS_TO_WIN characters,
+  //      OR videoProgress >= CHARS_GATE_VIDEO_OVERRIDE, OR cheat mode is active
   function checkWin() {
     if (state.phase !== 'typing') return;
     var timeOk      = state.cheatMode || state.currentTime >= getWinThreshold();
-    var sentencesOk = state.cheatMode || state.sentencesTyped >= MIN_SENTENCES_TO_WIN;
+    var sentencesOk = state.cheatMode || state.typedIndex >= MIN_CHARS_TO_WIN || state.videoProgress >= CHARS_GATE_VIDEO_OVERRIDE;
     if (state.skipProgress > state.videoProgress && timeOk && sentencesOk) {
       state.phase = 'done';
       window.top.postMessage({ type: 'success' }, '*');
