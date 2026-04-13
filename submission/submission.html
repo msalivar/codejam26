@@ -772,13 +772,21 @@
       } else if (gapToTarget > 10) {
         // Below target fraction — gentle boost
         state.progressScale = Math.min(1.2, state.progressScale + 0.01);
-      } else if (gapToTarget < -10) {
-        // Well above target fraction — hard brake; fast typists who overshoot
-        // by a wide margin get pulled back quickly toward the 80% zone.
-        state.progressScale = Math.max(0.15, state.progressScale - 0.06);
       } else if (gapToTarget < -5) {
-        // Moderately above target fraction — solid brake
-        state.progressScale = Math.max(0.25, state.progressScale - 0.03);
+        // Above target fraction — brake to pull skip back toward the 80% zone.
+        // Only active before win conditions are met; once both gates are open
+        // the user must be able to push through to a win without this resistance.
+        var winConditionsMet = state.currentTime >= getWinThreshold() &&
+                               state.sentencesTyped >= MIN_SENTENCES_TO_WIN;
+        if (!winConditionsMet) {
+          if (gapToTarget < -10) {
+            // Well above target — hard brake
+            state.progressScale = Math.max(0.15, state.progressScale - 0.06);
+          } else {
+            // Moderately above target — solid brake
+            state.progressScale = Math.max(0.25, state.progressScale - 0.03);
+          }
+        }
       }
     } else if (state.currentTime < getWinThreshold()) {
       // Slowdown phase over — only boost if falling behind
