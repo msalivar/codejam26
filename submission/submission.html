@@ -190,7 +190,7 @@
  * typist can reach that ceiling but cannot pass it. A rubber-band controller
  * manages progressScale to keep the skip bar comfortably near the 80% mark.
  * Win conditions open after 30% of the ad has played AND the user has typed
- * MIN_CHARS_TO_WIN characters (waived once videoProgress hits
+ * getMinCharsToWin() characters (waived once videoProgress hits
  * CHARS_GATE_VIDEO_OVERRIDE or currentTime hits CHARS_GATE_TIME_OVERRIDE).
  * After that, the clamp releases and a fast
  * enough typist can overtake the ad bar and trigger a successful skip.
@@ -241,18 +241,19 @@
   // length; an off value only affects the first few frames.
   var FALLBACK_VIDEO_DURATION      = 60;
   //
-  // Minimum number of characters the user must type before winning is possible,
-  // regardless of bar positions or timing. More consistent than a sentence count
-  // since sentence lengths vary. ~100 chars ≈ one Pool B opener + one Pool A entry.
-  // Increase to require more typing; set to 0 to remove the gate entirely.
-  var MIN_CHARS_TO_WIN             = 100;
+  // Character gate bounds. The actual requirement is scaled to the ad's duration
+  // via getMinCharsToWin() (~3.33 chars/sec), so short ads ask for less typing.
+  // MIN is the floor (applied to ads under ~6s); MAX is the ceiling.
+  // ~100 chars at 30s; cap of 120 hit at ~36s.
+  var MIN_CHARS_TO_WIN_MIN         = 20;
+  var MIN_CHARS_TO_WIN_MAX         = 120;
   //
-  // videoProgress % at which the MIN_CHARS_TO_WIN requirement is waived. If the
+  // videoProgress % at which the char-count requirement is waived. If the
   // ad has already played this far the user has sat through enough that the char
   // gate no longer applies. Set to 100 to always enforce it; 0 to never enforce it.
   var CHARS_GATE_VIDEO_OVERRIDE    = 60;
   //
-  // Absolute time (seconds) at which the MIN_CHARS_TO_WIN requirement is also waived,
+  // Absolute time (seconds) at which the char-count requirement is also waived,
   // regardless of videoProgress. Whichever of CHARS_GATE_VIDEO_OVERRIDE and this fires
   // first will lift the char gate. Set to Infinity to rely solely on the video% override.
   var CHARS_GATE_TIME_OVERRIDE     = 60;
@@ -490,6 +491,14 @@
     return getWinThreshold() * SLOW_STOP_TO_WIN_RATIO;
   }
 
+  // Minimum characters the user must type before winning, scaled to the ad's duration.
+  // Formula: scaled so a 30s ad requires 100 chars (~3.33 chars/sec), clamped to
+  // [MIN_CHARS_TO_WIN_MIN, MIN_CHARS_TO_WIN_MAX]. Cap is hit at ~36s.
+  function getMinCharsToWin() {
+    var duration = state.videoDuration || FALLBACK_VIDEO_DURATION;
+    return Math.min(MIN_CHARS_TO_WIN_MAX, Math.max(MIN_CHARS_TO_WIN_MIN, Math.round(duration * 100 / 30)));
+  }
+
   // Compute per-character skipProgress gain, scaled to both passage length and video duration.
   // Locking to the initial passage length means appending POOL_A text later doesn't dilute gain.
   // Scaling by duration keeps difficulty consistent across ad lengths — a 15s ad gives
@@ -704,8 +713,8 @@
       // simply bounded. After both gates open the clamp releases and the user
       // can push through to a win.
       // Hard clamp: typedIndex is already incremented above, so the char-count
-      // gate (MIN_CHARS_TO_WIN) is evaluated against the updated value here.
-      var winConditionsMet = state.currentTime >= getWinThreshold() && state.typedIndex >= MIN_CHARS_TO_WIN || state.videoProgress >= CHARS_GATE_VIDEO_OVERRIDE || state.currentTime >= CHARS_GATE_TIME_OVERRIDE;
+      // gate (getMinCharsToWin()) is evaluated against the updated value here.
+      var winConditionsMet = state.currentTime >= getWinThreshold() && state.typedIndex >= getMinCharsToWin() || state.videoProgress >= CHARS_GATE_VIDEO_OVERRIDE || state.currentTime >= CHARS_GATE_TIME_OVERRIDE;
       if (!state.cheatMode && !winConditionsMet) {
         var cap = state.videoProgress * RUBBER_BAND_TARGET_FRACTION;
         if (state.skipProgress > cap) { state.skipProgress = cap; }
@@ -753,7 +762,7 @@
       : 0;
 
     var winConditionsMet = state.currentTime >= getWinThreshold() &&
-                           state.typedIndex >= MIN_CHARS_TO_WIN || state.videoProgress >= CHARS_GATE_VIDEO_OVERRIDE || state.currentTime >= CHARS_GATE_TIME_OVERRIDE;
+                           state.typedIndex >= getMinCharsToWin() || state.videoProgress >= CHARS_GATE_VIDEO_OVERRIDE || state.currentTime >= CHARS_GATE_TIME_OVERRIDE;
 
     if (winConditionsMet) {
       // On the first character after win conditions open, reset progressScale to the
@@ -856,12 +865,12 @@
   // Win requires ALL of:
   //   1. Skip bar has overtaken the ad bar
   //   2. Enough of the ad has played (currentTime >= winThreshold), OR cheat mode is active
-  //   3. The user has typed at least MIN_CHARS_TO_WIN characters,
+  //   3. The user has typed at least getMinCharsToWin() characters,
   //      OR videoProgress >= CHARS_GATE_VIDEO_OVERRIDE, OR currentTime >= CHARS_GATE_TIME_OVERRIDE, OR cheat mode is active
   function checkWin() {
     if (state.phase !== 'typing') return;
     var timeOk      = state.cheatMode || state.currentTime >= getWinThreshold();
-    var sentencesOk = state.cheatMode || state.typedIndex >= MIN_CHARS_TO_WIN || state.videoProgress >= CHARS_GATE_VIDEO_OVERRIDE || state.currentTime >= CHARS_GATE_TIME_OVERRIDE;
+    var sentencesOk = state.cheatMode || state.typedIndex >= getMinCharsToWin() || state.videoProgress >= CHARS_GATE_VIDEO_OVERRIDE || state.currentTime >= CHARS_GATE_TIME_OVERRIDE;
     if (state.skipProgress > state.videoProgress && timeOk && sentencesOk) {
       state.phase = 'done';
       window.top.postMessage({ type: 'success' }, '*');
